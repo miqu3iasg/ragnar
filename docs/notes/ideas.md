@@ -1,0 +1,1 @@
+- [ ] retry com backoff e fila de requisições para tratar rate limit de modelos LLM free
