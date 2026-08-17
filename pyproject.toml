@@ -6,6 +6,7 @@ dependencies = [
     "fastapi[standard]>=0.141.1",
     "openai>=3.1.0",
     "python-dotenv>=1.2.2",
+    "tenacity>=9.1.4",
 ]
 
 [dependency-groups]
