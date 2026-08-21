@@ -1,4 +1,4 @@
-# References:
+# Refs:
 #   OpenRouter API reference: https://openrouter.ai/docs/api_reference/overview
 #   OpenAI Python client (error types used below): https://github.com/openai/openai-python/
 #   OpenRouter rate limits: https://openrouter.ai/docs/api_reference/limits
@@ -11,22 +11,22 @@ import logging
 
 # Error types: https://github.com/openai/openai-python
 from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
     AsyncOpenAI,
     RateLimitError,
-    APIConnectionError,
-    APITimeoutError,
-    APIStatusError,
 )
 
 # Tenacity: https://tenacity.readthedocs.io/en/latest/
 # Examples: https://github.com/jd/tenacity
 from tenacity import (
+    RetryCallState,
+    before_sleep_log,
     retry,
     retry_if_exception,
     stop_after_attempt,
     wait_random_exponential,
-    before_sleep_log,
-    RetryCallState,
 )
 
 # Environment variables are centralized in config.py to avoid repeated
@@ -36,7 +36,6 @@ from infrastructure.llm.config import (
     OPENROUTER_BASE_URL,
     OPENROUTER_MODEL,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +51,7 @@ client = AsyncOpenAI(
 def is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, (RateLimitError, APIConnectionError, APITimeoutError)):
         return True
-    if isinstance(exc, APIStatusError) and exc.status_code == 429:
-        return True
-    return False
+    return bool(isinstance(exc, APIStatusError) and exc.status_code == 429)
 
 
 def _headers_from_json_body(exc: BaseException) -> dict:
@@ -173,7 +170,7 @@ def wait_with_retry_after(fallback_wait):
     return wait_func
 
 
-# Async usage reference: https://github.com/openai/openai-python#async-usage
+# Async usage ref: https://github.com/openai/openai-python#async-usage
 @retry(
     retry=retry_if_exception(is_retryable),
     wait=wait_with_retry_after(wait_random_exponential(multiplier=1, max=60)),
@@ -182,7 +179,7 @@ def wait_with_retry_after(fallback_wait):
     reraise=True,
 )
 async def get_completion(content: str):
-    # Response schema reference: https://developers.openai.com/api/reference/resources/chat
+    # Response schema ref: https://developers.openai.com/api/reference/resources/chat
     completion = await client.chat.completions.create(
         extra_headers={
             "HTTP-Referer": "<YOUR_SITE_URL>",  # Optional. Site URL for rankings on openrouter.ai.

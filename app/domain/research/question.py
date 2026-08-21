@@ -1,10 +1,10 @@
 # ref:
 # https://fastapi.tiangolo.com/#alternative-api-docs
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class QuestionStatus(StrEnum):
@@ -22,4 +22,4 @@ class Question(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     content: str
     status: QuestionStatus = QuestionStatus.PENDING
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
