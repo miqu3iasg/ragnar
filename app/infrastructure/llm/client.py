@@ -31,7 +31,7 @@ from tenacity import (
 
 # Environment variables are centralized in config.py to avoid repeated
 # os.getenv calls scattered across the codebase.
-from infrastructure.llm.config import (
+from app.infrastructure.llm.config import (
     OPENROUTER_API_KEY,
     OPENROUTER_BASE_URL,
     OPENROUTER_MODEL,
@@ -94,8 +94,7 @@ def _headers_from_json_body(exc: BaseException) -> dict:
     if not isinstance(headers, dict):
         return {}
 
-    # Normalize keys to lowercase to match the convention used by actual
-    # HTTP headers.
+    # Normalize keys to lowercase to match the convention used by actual HTTP headers.
     return {k.lower(): v for k, v in headers.items()}
 
 

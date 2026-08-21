@@ -6,17 +6,17 @@ import logging
 # openai SDK exception hierarchy ref: https://github.com/openai/openai-python/
 from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 
-from domain.research.question import Question
-from domain.research.answer import Answer
+from app.domain.research.question import Question
+from app.domain.research.answer import Answer
 
-from domain.research.exceptions import (
+from app.domain.research.exceptions import (
     EmptyQuestionError,
     LLMRateLimitError,
     LLMResponseError,
     LLMUnavailableError,
 )
 
-from infrastructure.llm.client import get_completion
+from app.infrastructure.llm.client import get_completion
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +24,12 @@ logger = logging.getLogger(__name__)
 async def ask_research_question(question: Question) -> Answer:
     # A question that is only whitespace should be treated the same as an
     # empty question, not silently sent to the LLM.
-    content = question.content.strip()
-    if not content:
+    question_text = question.question_text.strip()
+    if not question_text:
         raise EmptyQuestionError("Question content must not be empty.")
 
     try:
-        response = await get_completion(content)
+        answer_text = await get_completion(question_text)
     except RateLimitError as exc:
         # ref: https://tenacity.readthedocs.io/en/latest/
         #
@@ -61,7 +61,9 @@ async def ask_research_question(question: Question) -> Answer:
         # unchanged; we deliberately do NOT wrap this in a domain
         # exception, because we don't know what it is; wrapping it would
         # hide the real cause from logs/monitoring.
-        logger.exception(f"Unexpected error while processing question: {content!r}")
+        logger.exception(
+            f"Unexpected error while processing question: {question_text!r}"
+        )
         raise
 
     # The call succeeded wiht no exception, but the content itself may still be
@@ -69,11 +71,13 @@ async def ask_research_question(question: Question) -> Answer:
     #
     # Known cause: OpenRouter/OpenAI can return an empty string
     # when finish_reason is "content_filter" or occasionally "length".
-    # Silently returning Answer(content="") here would produce a 200 OK
+    # Silently returning Answer(answer_text="") here would produce a 200 OK
     # response that looks successful but carries no useful information,
     # worse than an explicit error, because it fails silently downstream.
-    if not reponse or not response.strip():
-        logger.error(f"LLM provider returned empty content for question: {content!r}")
+    if not answer_text or not answer_text.strip():
+        logger.error(
+            f"LLM provider returned a empty response for question: {question_text!r}"
+        )
         raise LLMResponseError("The model did not return a usable response.")
 
-    return Answer(question_id=question.id, content=response, sources=[])
+    return Answer(question_id=question.id, answer_text=answer_text, sources=[])

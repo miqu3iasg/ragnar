@@ -20,6 +20,6 @@ class Question(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: UUID = Field(default_factory=uuid4)
-    content: str
+    question_text: str
     status: QuestionStatus = QuestionStatus.PENDING
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

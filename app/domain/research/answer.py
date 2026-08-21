@@ -21,5 +21,5 @@ class Answer(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     question_id: UUID
     sources: list[Source] = Field(default_factory=list)
-    content: str
+    answer_text: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
