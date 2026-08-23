@@ -9,7 +9,7 @@ import httpx
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
-from infrastructure.llm.client import (
+from app.infrastructure.llm.client import (
     get_completion,
     is_retryable,
     _extract_retry_after,
@@ -55,7 +55,7 @@ async def test_get_completion_returns_model_text():
     # patch() temporarily replaces the specified object, ONLY during the "with" block. Note the path
     # used: it is not "openai.AsyncOpenAI", but rather where the client is USED within the
     # infrastructure.llm.client module.
-    with patch("infrastructure.llm.client.client") as mock_client:
+    with patch("app.infrastructure.llm.client.client") as mock_client:
         # We need to use AsyncMock here because a simple MagicMock would return itself,
         # instead of "awaitable" and the `await` inside get_completion would failed.
         mock_client.chat.completions.create = AsyncMock(return_value=fake_completion)
@@ -166,7 +166,7 @@ async def test_get_completion_retries_transient_errors_then_succeeds(make_error)
     fake_completion.choices[0].message.content = "Recovered after retry"
 
     with (
-        patch("infrastructure.llm.client.client") as mock_client,
+        patch("app.infrastructure.llm.client.client") as mock_client,
         patch("asyncio.sleep", new=AsyncMock()),
     ):
         mock_client.chat.completions.create = AsyncMock(
@@ -186,7 +186,7 @@ async def test_get_completion_does_not_retry_non_retryable_error():
     )
 
     with (
-        patch("infrastructure.llm.client.client") as mock_client,
+        patch("app.infrastructure.llm.client.client") as mock_client,
         patch("asyncio.sleep", new=AsyncMock()) as mock_sleep,
     ):
         mock_client.chat.completions.create = AsyncMock(side_effect=non_retryable)
@@ -204,7 +204,7 @@ async def test_get_completion_reraises_after_exhausting_retries():
     persistent_error = APITimeoutError(request=_fake_request())
 
     with (
-        patch("infrastructure.llm.client.client") as mock_client,
+        patch("app.infrastructure.llm.client.client") as mock_client,
         patch("asyncio.sleep", new=AsyncMock()),
     ):
         mock_client.chat.completions.create = AsyncMock(side_effect=persistent_error)
@@ -228,7 +228,7 @@ async def test_get_completion_waits_according_to_retry_after_header():
     fake_completion.choices[0].message.content = "ok"
 
     with (
-        patch("infrastructure.llm.client.client") as mock_client,
+        patch("app.infrastructure.llm.client.client") as mock_client,
         patch("asyncio.sleep", new=AsyncMock()) as mock_sleep,
     ):
         mock_client.chat.completions.create = AsyncMock(
@@ -250,7 +250,7 @@ async def test_get_completion_forwards_extra_headers():
     fake_completion = MagicMock()
     fake_completion.choices[0].message.content = "ok"
 
-    with patch("infrastructure.llm.client.client") as mock_client:
+    with patch("app.infrastructure.llm.client.client") as mock_client:
         mock_client.chat.completions.create = AsyncMock(return_value=fake_completion)
 
         await get_completion("Ping")
@@ -263,12 +263,12 @@ async def test_get_completion_forwards_extra_headers():
 @pytest.mark.asyncio
 async def test_get_completion_uses_configured_model():
     # Ref: infrastructure.llm.config.OPENROUTER_MODEL
-    from infrastructure.llm.config import OPENROUTER_MODEL
+    from app.infrastructure.llm.config import OPENROUTER_MODEL
 
     fake_completion = MagicMock()
     fake_completion.choices[0].message.content = "ok"
 
-    with patch("infrastructure.llm.client.client") as mock_client:
+    with patch("app.infrastructure.llm.client.client") as mock_client:
         mock_client.chat.completions.create = AsyncMock(return_value=fake_completion)
 
         await get_completion("Ping")

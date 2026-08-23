@@ -14,15 +14,15 @@ Lista única, em ordem. Cada item pressupõe o anterior concluído.
 - [x] Escrever teste com mock para get_completion
 - [x] Rodar e validar o teste com uv run pytest
 - [x] Criar modelo Pydantic Answer em domain/research/answer.py
-- [ ] Criar domain/research/service.py com função que chama get_completion e devolve a resposta
-- [ ] Ligar a rota /ask ao service (não mais ao client diretamente)
-- [ ] Usar response_model na rota /ask apontando para Answer
+- [x] Criar domain/research/service.py com função que chama get_completion e devolve a resposta
+- [x] Ligar a rota /ask ao service (não mais ao client diretamente)
+- [x] Usar response_model na rota /ask apontando para Answer
 - [ ] Testar manualmente o fluxo completo pelo /docs
 - [ ] Escrever teste do endpoint /ask usando TestClient, com mock
-- [ ] Pesquisar e implementar retry com backoff (lib tenacity) em get_completion
-- [ ] Capturar especificamente a exceção de rate limit do SDK openai e diferenciar de erros que não valem retry
+- [x] Pesquisar e implementar retry com backoff (lib tenacity) em get_completion
+- [x] Capturar especificamente a exceção de rate limit do SDK openai e diferenciar de erros que não valem retry
 - [ ] Criar um exception handler no FastAPI para erros de rate limit, com status HTTP apropriado
-- [ ] Decidir o nicho do produto (ex: acadêmico, jurídico, médico, notícias) — isso muda o que "fonte confiável" significa
+- [x] Decidir o nicho do produto (ex: acadêmico, jurídico, médico, notícias) — já decidi, será acadêmico
 - [ ] Pesquisar tool calling / function calling na API do modelo escolhido, entender formato de definição de ferramentas
 - [ ] Definir a primeira ferramenta: busca na web (pesquisar APIs de busca com camada gratuita, ex: Tavily, SerpAPI, Brave Search API)
 - [ ] Implementar a ferramenta de busca isolada (função Python simples, sem IA ainda), testada sozinha
