@@ -1,5 +1,16 @@
 Lista única, em ordem. Cada item pressupõe o anterior concluído.
 
+## O que é RAG e onde ele entra neste projeto
+
+**RAG (Retrieval-Augmented Generation)** é a técnica de, antes de pedir pro LLM
+gerar a resposta, buscar (retrieve) trechos relevantes de fontes externas e
+colocá-los como contexto dentro do prompt (augment), para então gerar
+(generate) uma resposta fundamentada nesses trechos — em vez de depender só do
+conhecimento interno do modelo. Isso reduz alucinação e permite citar fontes
+reais, que é exatamente o objetivo do seu produto.
+
+---
+
 - [x] Criar pasta do projeto e ambiente virtual com uv
 - [x] Instalar FastAPI e Uvicorn, subir servidor local com endpoint simples
 - [x] Acessar a documentação automática do FastAPI (/docs)
@@ -17,12 +28,13 @@ Lista única, em ordem. Cada item pressupõe o anterior concluído.
 - [x] Criar domain/research/service.py com função que chama get_completion e devolve a resposta
 - [x] Ligar a rota /ask ao service (não mais ao client diretamente)
 - [x] Usar response_model na rota /ask apontando para Answer
-- [ ] Testar manualmente o fluxo completo pelo /docs
-- [ ] Escrever teste do endpoint /ask usando TestClient, com mock
+- [x] Testar manualmente o fluxo completo pelo /docs
+- [x] Escrever teste do endpoint /ask usando TestClient, com mock
 - [x] Pesquisar e implementar retry com backoff (lib tenacity) em get_completion
 - [x] Capturar especificamente a exceção de rate limit do SDK openai e diferenciar de erros que não valem retry
-- [ ] Criar um exception handler no FastAPI para erros de rate limit, com status HTTP apropriado
+- [x] Criar um exception handler no FastAPI para erros de rate limit, com status HTTP apropriado
 - [x] Decidir o nicho do produto (ex: acadêmico, jurídico, médico, notícias) — já decidi, será acadêmico
+- [ ] **[RAG]** Pesquisar o conceito de RAG (Retrieval-Augmented Generation): o que é retrieval, augmentation e generation, por que reduz alucinação, e como o fluxo de busca+embeddings+geração que vou construir se encaixa nesse padrão
 - [ ] Pesquisar tool calling / function calling na API do modelo escolhido, entender formato de definição de ferramentas
 - [ ] Definir a primeira ferramenta: busca na web (pesquisar APIs de busca com camada gratuita, ex: Tavily, SerpAPI, Brave Search API)
 - [ ] Implementar a ferramenta de busca isolada (função Python simples, sem IA ainda), testada sozinha
@@ -30,17 +42,27 @@ Lista única, em ordem. Cada item pressupõe o anterior concluído.
 - [ ] Implementar a etapa de decisão "vale a pena buscar fonte externa para essa pergunta, ou o modelo responde direto?"
 - [ ] Implementar fetch do conteúdo das páginas retornadas pela busca (não só o snippet)
 - [ ] Extrair texto limpo de cada página buscada (pesquisar libs de extração de conteúdo de HTML, ex: trafilatura, readability-lxml)
+- [ ] **[RAG]** Pesquisar estratégias de chunking de texto para RAG (tamanho de chunk, overlap entre chunks, chunking por sentença vs por tamanho fixo)
+- [ ] **[RAG]** Implementar função de chunking: dividir o texto limpo extraído de cada página em pedaços menores antes de gerar embeddings
+- [ ] **[RAG]** Escrever teste da função de chunking com texto fake (verificar tamanho dos chunks e overlap)
 - [ ] Pesquisar o conceito de embeddings e como gerar embeddings de texto (via API do provedor ou modelo local leve)
-- [ ] Implementar geração de embeddings da pergunta do usuário e de cada resultado de busca
-- [ ] Implementar re-ranking dos resultados por similaridade semântica (pesquisar similaridade de cosseno)
+- [ ] Implementar geração de embeddings da pergunta do usuário e de cada chunk de cada resultado de busca
+- [ ] **[RAG]** Pesquisar vector stores / bancos vetoriais (ex: FAISS, ChromaDB, pgvector) e decidir se vale usar um agora ou seguir com comparação manual por enquanto
+- [ ] **[RAG]** Implementar armazenamento dos embeddings dos chunks no vector store escolhido (ou estrutura em memória, se decidir adiar o vector store de verdade)
+- [ ] **[RAG]** Implementar a busca por similaridade no vector store (retrieval): dado o embedding da pergunta, retornar os chunks mais próximos
+- [ ] Implementar re-ranking dos resultados por similaridade semântica (pesquisar similaridade de cosseno) — usar como camada extra sobre o retrieval, se o vector store já devolver por proximidade
 - [ ] Escrever testes para a função de re-ranking com dados fake (sem chamar API de verdade)
 - [ ] Pesquisar o conceito de Natural Language Inference (NLI) e modelos pré-treinados para essa tarefa
 - [ ] Escolher e testar isoladamente um modelo de NLI (pesquisar modelos disponíveis via HuggingFace, ex: modelos treinados em MNLI)
 - [ ] Implementar comparação par a par entre trechos de fontes diferentes, classificando concordância/contradição/neutralidade
 - [ ] Definir estrutura de dados para representar uma fonte (url, título, trecho usado, score de relevância, resultado de contradição)
+- [ ] **[RAG]** Pesquisar técnicas de prompt para RAG (como formatar "contexto recuperado + pergunta do usuário" no prompt final, técnicas de grounding, como instruir o modelo a citar apenas o que está no contexto)
+- [ ] **[RAG]** Implementar a montagem do prompt final do RAG: pergunta do usuário + chunks recuperados (pós re-rank e checagem de contradição) formatados como contexto explícito
+- [ ] **[RAG]** Escrever teste (mockado) validando que o prompt final inclui corretamente os trechos recuperados e a pergunta original
 - [ ] Implementar a montagem da resposta final citando explicitamente as fontes usadas, com seus respectivos trechos
 - [ ] Atualizar o modelo Answer para incluir a lista de fontes citadas
-- [ ] Escrever testes de ponta a ponta do fluxo completo (pergunta → busca → re-rank → contradição → resposta com fontes), tudo mockado
+- [ ] **[RAG]** Pesquisar métricas de avaliação de sistemas RAG (ex: faithfulness/fidelidade ao contexto, relevância do contexto recuperado, frameworks como RAGAS) — entender como medir se o sistema está "alucinando" menos depois de todo esse trabalho
+- [ ] Escrever testes de ponta a ponta do fluxo completo (pergunta → busca → chunking → retrieval → re-rank → contradição → prompt RAG → resposta com fontes), tudo mockado
 - [ ] Avaliar necessidade de persistência: banco de dados para histórico de perguntas e fontes usadas
 - [ ] Instalar e configurar PostgreSQL, escolher ORM (SQLAlchemy) e configurar migrations (Alembic)
 - [ ] Modelar tabelas para perguntas, respostas e fontes citadas
@@ -70,9 +92,17 @@ Lista única, em ordem. Cada item pressupõe o anterior concluído.
 - **API de busca**: Tavily (feita para agentes de IA, tem camada free), Brave Search API, ou SerpAPI — pesquisar "Tavily API python", tem SDK e é a mais usada em projetos de agente
 - **Extração de texto de página**: `trafilatura` (mais moderna, boa pra artigos/notícias) ou `readability-lxml` — pesquisar "trafilatura python extract article text"
 
+### Chunking e vector store (RAG)
+- **Chunking**: pode começar simples com split por tamanho fixo + overlap (ex: `langchain.text_splitter` só pra essa função, ou uma implementação própria com `tiktoken` pra contar tokens) — pesquisar "text chunking strategies RAG"
+- **Vector store**: `FAISS` (leve, roda local, sem servidor) para começar; `ChromaDB` se quiser algo com API mais amigável e persistência em disco; `pgvector` se já for usar Postgres e quiser manter tudo num único banco — pesquisar "FAISS vs ChromaDB vs pgvector"
+
 ### Embeddings e re-ranking
 - **Gerar embeddings via API**: modelos de embedding do próprio OpenRouter/OpenAI, ou `sentence-transformers` rodando local (mais leve que um LLM, não deve pesar tanto no SSD)
 - **Similaridade de cosseno**: `numpy` (implementação simples) ou `scikit-learn` (`cosine_similarity` pronta) — pesquisar "cosine similarity python embeddings"
+
+### Prompt building / grounding (RAG)
+- Pesquisar "RAG prompt template", "context injection LLM prompt" — a ideia central é formatar algo como: instrução + "Contexto: [trechos numerados com fonte]" + "Pergunta: [pergunta do usuário]" + instrução para citar apenas o que está no contexto
+- Pesquisar frameworks de avaliação de RAG (ex: RAGAS) só pra entender as métricas — não precisa necessariamente adotar o framework inteiro, mas ajuda a saber o que medir (fidelidade ao contexto, relevância do contexto recuperado, relevância da resposta)
 
 ### NLI / detecção de contradição
 - **HuggingFace Transformers**: pesquisar "huggingface pipeline zero-shot NLI" e "MNLI model huggingface" — existem modelos prontos pra rodar local, alguns pequenos o suficiente pra CPU
@@ -90,7 +120,7 @@ Lista única, em ordem. Cada item pressupõe o anterior concluído.
 
 ---
 
-## Estrutura de pastas sugerida (evolução da atual)
+## Estrutura de pastas sugerida (evolução da atual, com RAG explícito)
 
 ```
 ragnar/
@@ -99,7 +129,7 @@ ragnar/
 │       ├── question.py            # já existe
 │       ├── answer.py              # inclui agora lista de fontes citadas
 │       ├── source.py              # modelo Pydantic: url, título, trecho, score, credibilidade
-│       └── service.py             # orquestra o fluxo: decide buscar, chama tools, monta resposta
+│       └── service.py             # orquestra o fluxo RAG: decide buscar, chama tools, faz retrieval, monta prompt, gera resposta
 │
 ├── infrastructure/
 │   ├── llm/
@@ -110,6 +140,11 @@ ragnar/
 │   ├── search/
 │   │   ├── client.py              # chamada à API de busca (Tavily/Brave/SerpAPI)
 │   │   └── extractor.py           # extração de texto limpo das páginas (trafilatura)
+│   │
+│   ├── rag/
+│   │   ├── chunking.py            # [NOVO] divide texto extraído em chunks (tamanho + overlap)
+│   │   ├── vector_store.py        # [NOVO] indexação e busca por similaridade (FAISS/ChromaDB/pgvector)
+│   │   └── prompt_builder.py      # [NOVO] monta o prompt final: pergunta + contexto recuperado
 │   │
 │   ├── embeddings/
 │   │   ├── client.py              # geração de embeddings
@@ -135,6 +170,10 @@ ragnar/
 │       │   └── test_client.py     # já existe
 │       ├── search/
 │       │   └── test_client.py
+│       ├── rag/
+│       │   ├── test_chunking.py       # [NOVO]
+│       │   ├── test_vector_store.py   # [NOVO]
+│       │   └── test_prompt_builder.py # [NOVO]
 │       ├── embeddings/
 │       │   └── test_ranking.py
 │       └── nli/
@@ -148,3 +187,5 @@ ragnar/
 ```
 
 Nota sobre `credibility/train.py`: scripts de treino de modelo geralmente não rodam como parte da API — são executados manualmente ou por um pipeline separado, gerando um arquivo de modelo salvo (ex: `.pkl` ou `.joblib`) que o `model.py` carrega em produção. Vale pesquisar como salvar/carregar modelos scikit-learn (`joblib.dump` / `joblib.load`) quando chegar nessa parte.
+
+Nota sobre `rag/vector_store.py`: se decidir adiar a adoção de um vector store de verdade (FAISS/ChromaDB/pgvector), esse arquivo pode começar como uma estrutura simples em memória (lista de chunks + embeddings, comparação manual) e ser trocado depois sem afetar o resto do pipeline, desde que a interface (função de indexar + função de buscar) se mantenha estável.
