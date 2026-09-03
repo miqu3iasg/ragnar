@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -15,10 +16,6 @@ from app.domain.research.exceptions import (
 from app.domain.research.question import Question
 from app.domain.research.service import ask_research_question
 from app.infrastructure.llm.tools import AVAILABLE_TOOLS
-
-# Ref: https://pytest-asyncio.readthedocs.io/en/stable/reference/markers/index.html
-# This marks every test in the module as asyncio so we don't have to decorate each async test function one by one.
-pytestmark = pytest.mark.asyncio
 
 _FAKE_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -98,12 +95,17 @@ def _patch_get_completion(**kwargs) -> patch:
 
 @pytest.mark.parametrize(
     "question_text",
-    ["", "   ", "\n\t  "],
-    ids=["empty", "spaces", "mixed-whitespace"],
+    ["   ", "\n\t  "],
+    ids=["spaces", "mixed-whitespace"],
 )
 # Ref: https://docs.pytest.org/en/stable/how-to/parametrize.html
-# This covers a fully empty string, a string with only spaces and a string with mixed
-# whitespace characters in a single test instead of writing three nearly identical ones.
+# This covers a string with only spaces and a string with mixed whitespace
+# characters in a single test instead of writing two nearly identical ones.
+# Note: the fully-empty case ("") is now caught upstream by Pydantic's
+# min_length=1 validator on Question.question_text (see domain/research/
+# question.py), so it can't reach the service's own blank-check anymore.
+# The service's check still matters for whitespace-only input that
+# passes min_length=1 but strip()s down to empty.
 async def test_ask_rejects_blank_question_without_calling_llm(question_text):
     blank_question = Question(question_text=question_text)
 
@@ -152,6 +154,26 @@ async def test_ask_translates_rate_limit_error(question):
     with _patch_get_completion(side_effect=_make_rate_limit_error()):
         with pytest.raises(LLMRateLimitError):
             await ask_research_question(question)
+
+
+async def test_ask_propagates_provider_retry_after_on_rate_limit(question):
+    # When the SDK error carries a Retry-After header, the domain
+    # exception must carry the parsed value so the API layer can forward
+    # it as a Retry-After HTTP header. Without this, the provider's hint
+    # is silently dropped at the boundary.
+    body = {"error": {"metadata": {"headers": {"Retry-After": "7"}}}}
+    response = httpx.Response(
+        429,
+        request=httpx.Request("POST", _FAKE_URL),
+        json=body,
+    )
+    error = RateLimitError("rate limited", response=response, body=body)
+
+    with _patch_get_completion(side_effect=error):
+        with pytest.raises(LLMRateLimitError) as exc_info:
+            await ask_research_question(question)
+
+    assert exc_info.value.retry_after == 7.0
 
 
 async def test_ask_translates_rate_limit_error_takes_precedence_over_status_error(
@@ -260,3 +282,75 @@ async def test_ask_chains_original_sdk_exception_as_cause(
             await ask_research_question(question)
 
     assert exc_info.value.__cause__ is original_error
+
+
+async def test_ask_rejects_tool_call_with_unexpected_name(question):
+    # The model can hallucinate tool names. Today's contract: AVAILABLE_TOOLS
+    # exposes only search_web, so anything else is by definition a model-
+    # side bug. service.py turns it into LLMResponseError (502 upstream)
+    # instead of crashing later on a missing "query" key in arguments.
+    bad_tool_message = SimpleNamespace(
+        content=None,
+        tool_calls=[
+            SimpleNamespace(
+                id="call_1",
+                function=SimpleNamespace(
+                    name="send_email",
+                    arguments=json.dumps({"to": "someone@example.com"}),
+                ),
+            )
+        ],
+    )
+
+    with patch(
+        "app.domain.research.service.get_completion_with_tools",
+        new=AsyncMock(return_value=bad_tool_message),
+    ):
+        with pytest.raises(LLMResponseError, match="unexpected tool"):
+            await ask_research_question(question)
+
+
+async def test_ask_uses_first_tool_call_when_model_returns_multiple(question):
+    # AVAILABLE_TOOLS has a single tool today, but the service must remain
+    # robust if a model returns more than one. We expect: log a warning,
+    # execute only the first, and ignore the rest. The final Answer must
+    # still come from the second LLM call (the grounded answer turn).
+    first = SimpleNamespace(
+        id="call_first",
+        function=SimpleNamespace(
+            name="search_web",
+            arguments=json.dumps({"query": "first query"}),
+        ),
+    )
+    second = SimpleNamespace(
+        id="call_second",
+        function=SimpleNamespace(
+            name="search_web",
+            arguments=json.dumps({"query": "second query"}),
+        ),
+    )
+    multi_tool_message = SimpleNamespace(
+        content=None,
+        tool_calls=[first, second],
+    )
+    final = SimpleNamespace(content="grounded answer.", tool_calls=None)
+
+    with (
+        patch(
+            "app.domain.research.service.get_completion_with_tools",
+            new=AsyncMock(side_effect=[multi_tool_message, final]),
+        ),
+        patch(
+            "app.domain.research.service.search_web",
+            new=AsyncMock(return_value=[]),
+        ) as search_mock,
+    ):
+        answer = await ask_research_question(question)
+
+    # Only the first tool call should have triggered a search. If the
+    # service naively iterated over all tool_calls we'd see two calls here.
+    assert search_mock.await_count == 1
+    # The first call's query must have been the one passed through.
+    (called_kwargs,), _ = search_mock.call_args
+    assert called_kwargs == "first query"
+    assert answer.answer_text == "grounded answer."
