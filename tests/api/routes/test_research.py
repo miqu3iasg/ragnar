@@ -94,6 +94,28 @@ def test_ask_question_missing_question_text_returns_422(client):
     assert response.status_code == 422
 
 
+def test_ask_question_question_text_exceeding_max_length_returns_422(client):
+    # Defense-in-depth: the max_length on Question.question_text (set in
+    # app/domain/research/question.py) rejects overlong payloads at the
+    # Pydantic layer, before any LLM or retrieval work happens. A request
+    # at exactly max_length is accepted; one over it is rejected.
+    overlong = "a" * 4001
+
+    response = client.post("/ask", json={"question_text": overlong})
+
+    assert response.status_code == 422
+
+
+def test_ask_question_empty_string_question_text_returns_422(client):
+    # An empty string fails Question's min_length=1 validator before
+    # reaching the service layer's whitespace-stripping empty-question
+    # check. Both paths reject, but the Pydantic layer rejects earlier
+    # and with a more specific error class.
+    response = client.post("/ask", json={"question_text": ""})
+
+    assert response.status_code == 422
+
+
 def test_ask_question_unexpected_exception_is_not_swallowed(
     client, question_payload, monkeypatch
 ):
