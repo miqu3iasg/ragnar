@@ -161,6 +161,17 @@ def _extract_retry_after(exc: BaseException) -> float | None:
     return None
 
 
+def extract_retry_after(exc: BaseException) -> float | None:
+    """
+    Public, re-exported alias of the module-private _extract_retry_after.
+
+    Domain/service code needs the provider-suggested wait time on the
+    way back up so the 429 response can carry a Retry-After header, but
+    it must not depend on a private name from the LLM client module.
+    """
+    return _extract_retry_after(exc)
+
+
 def wait_with_retry_after(fallback_wait):
     """Prefer the provider's suggested Retry-After; fall back to exponential backoff."""
 

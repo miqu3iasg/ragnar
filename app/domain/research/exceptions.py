@@ -27,6 +27,16 @@ class LLMRateLimitError(ResearchError):
     retry attempts (we handled that by tenacity in infrastructure/llm/client.py)
     have been exhausted."""
 
+    def __init__(
+        self, message: str, retry_after: float | None = None
+    ) -> None:
+        super().__init__(message)
+        # Best-effort copy of the provider-suggested wait time in seconds.
+        # Used by api/exception_handlers.py's llm_rate_limit_handler to
+        # surface a Retry-After HTTP header on the 429 response. None when
+        # the provider didn't send one — handler then omits the header.
+        self.retry_after = retry_after
+
 
 class LLMUnavailableError(ResearchError):
     """Raised when the LLM provider is unreachable or returns a server side

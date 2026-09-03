@@ -150,6 +150,68 @@ def test_headers_from_json_body_ignores_malformed_shapes():
     assert _headers_from_json_body(FakeExc()) == {}
 
 
+# Boundary tests for the X-RateLimit-Reset heuristic in _extract_retry_after.
+# The heuristic has three regimes (epoch ms, epoch s, plain duration) and
+# edge cases in each: a value just below 1e9 must NOT be parsed as epoch
+# seconds, a value of exactly 1e9 must be, and a negative duration must
+# be clamped to zero. These tests pin those boundaries so a future
+# "off-by-one" refactor doesn't quietly turn a real bug into "wait 0s".
+def test_extract_retry_after_x_ratelimit_reset_below_one_billion_is_duration():
+    # 999_999_999 < 1e9 → must be parsed as a plain duration in seconds,
+    # not as an epoch-second timestamp. Today this is exactly 31 years
+    # before unix epoch, which would be a wildly negative wait, so this
+    # test catches the threshold bug specifically.
+    response = _fake_response(429, headers={"x-ratelimit-reset": "999999999"})
+    exc = APIStatusError("rate limited", response=response, body=None)
+
+    assert _extract_retry_after(exc) == 999999999.0
+
+
+def test_extract_retry_after_x_ratelimit_reset_at_one_billion_is_epoch_seconds():
+    # Exactly at the 1e9 threshold → must be parsed as epoch seconds,
+    # which yields a clearly negative wait that gets clamped to 0.
+    response = _fake_response(429, headers={"x-ratelimit-reset": "1000000000"})
+    exc = APIStatusError("rate limited", response=response, body=None)
+
+    wait = _extract_retry_after(exc)
+    assert wait is not None
+    assert wait == 0.0
+
+
+def test_extract_retry_after_x_ratelimit_reset_negative_value_is_clamped():
+    # A provider bug or signed integer underflow could give us a
+    # negative duration. Must clamp to 0, not return the negative value
+    # (which tenacity would forward to asyncio.sleep — silent breakage).
+    response = _fake_response(429, headers={"x-ratelimit-reset": "-5"})
+    exc = APIStatusError("rate limited", response=response, body=None)
+
+    assert _extract_retry_after(exc) == 0.0
+
+
+def test_extract_retry_after_x_ratelimit_reset_unparseable_returns_none():
+    # Header value isn't a valid float (rare but possible if a proxy
+    # corrupts it) — must return None, not raise. The caller falls back
+    # to exponential backoff.
+    response = _fake_response(429, headers={"x-ratelimit-reset": "not-a-number"})
+    exc = APIStatusError("rate limited", response=response, body=None)
+
+    assert _extract_retry_after(exc) is None
+
+
+def test_extract_retry_after_http_date_string_returns_none():
+    # Per RFC 7231 Retry-After can be either a delta-seconds or an
+    # HTTP-date. This implementation only handles delta-seconds; HTTP-date
+    # is documented as "not handled here for simplicity". If a future
+    # contributor removes that comment without adding date parsing, this
+    # test fails loudly.
+    response = _fake_response(
+        429, headers={"retry-after": "Wed, 21 Oct 2015 07:28:00 GMT"}
+    )
+    exc = APIStatusError("rate limited", response=response, body=None)
+
+    assert _extract_retry_after(exc) is None
+
+
 # End-to-end retry behavior of get_completion. asyncio.sleep is patched so these tests don't
 # actually wait through real backoff delays.
 @pytest.mark.asyncio

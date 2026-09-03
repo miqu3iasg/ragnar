@@ -86,6 +86,19 @@ reais, que é exatamente o objetivo do seu produto.
 
 ---
 
+## Como rodar os testes (referência rápida)
+
+Ver `docs/TESTING.md` para a versão completa. Atalhos:
+
+```bash
+uv run pytest                  # suíte completa, async via asyncio_mode=auto
+uv run pytest --cov=app        # com cobertura (sem gate, apenas relatório)
+uv run pytest tests/api/...    # um arquivo ou diretório específico
+```
+
+
+---
+
 ## Ferramentas e tecnologias por trecho do roadmap
 
 ### Busca e extração de conteúdo

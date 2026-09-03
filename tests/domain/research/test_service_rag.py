@@ -23,8 +23,6 @@ from app.domain.research.service import ask_research_question
 from app.infrastructure.embeddings.client import EmbeddingModelUnavailableError
 from app.infrastructure.search.client import SearchResult
 
-pytestmark = pytest.mark.asyncio
-
 
 def _tool_call_message(query: str, tool_call_id: str = "call_1") -> SimpleNamespace:
     # Shape mirrors the openai SDK's assistant message when the model
@@ -292,3 +290,189 @@ async def test_ask_translates_embedding_failure_into_retrieval_unavailable(quest
         ):
             with pytest.raises(RetrievalUnavailableError):
                 await ask_research_question(question)
+
+
+async def test_ask_continues_when_one_source_fetch_raises_unexpectedly(question):
+    # extractor.py returns None for known failure modes (timeout, HTTP
+    # error, no extractable content), but a programming bug in the
+    # extractor — or a malformed URL that httpx surfaces as an
+    # unexpected exception type — must NOT take down the whole request.
+    # The contract is "partial sources still produce a useful answer".
+    # Refs:
+    # - asyncio.gather + per-task exception: this depends on the
+    #   in-process gather in service.py raising per-task and the
+    #   _process_source wrapper swallowing it to an empty list.
+    #   https://docs.python.org/3/library/asyncio-task.html#asyncio.gather
+    good_source = _source("https://good.example.com/page", "Good")
+    bad_source = _source("https://bad.example.com/page", "Bad")
+
+    async def flaky_extract(url):
+        if "bad" in url:
+            raise RuntimeError("simulated extractor bug")
+        return "Paris is the capital of France."
+
+    with _patch_llm(
+        tool_call_message=_tool_call_message("capital of france"),
+        final_message=_final_message("Paris [1]."),
+    ):
+        with (
+            patch(
+                "app.domain.research.service.search_web",
+                new=AsyncMock(return_value=[good_source, bad_source]),
+            ),
+            patch(
+                "app.domain.research.service.extract_page_text",
+                new=AsyncMock(side_effect=flaky_extract),
+            ),
+            patch(
+                "app.domain.research.service.embed_texts",
+                new=AsyncMock(return_value=[[1.0, 0.0]]),
+            ),
+            patch(
+                "app.domain.research.service.embed_text",
+                new=AsyncMock(return_value=[1.0, 0.0]),
+            ),
+        ):
+            answer = await ask_research_question(question)
+
+    # The good source must survive, the bad source must be excluded.
+    assert answer.answer_text == "Paris [1]."
+    assert len(answer.sources) == 1
+    assert str(answer.sources[0].url) == str(good_source.url)
+
+
+async def test_ask_sends_no_sources_block_to_llm_when_all_sources_fail(question):
+    # All sources raise — the model should still be invoked with the
+    # question, but with the "(none retrieved)" branch of the prompt
+    # (see prompt_builder.py). LLMResponseError if the model then
+    # returns empty content, but we test the more useful case: the
+    # model answers honestly from its own knowledge.
+    bad_source = _source("https://bad.example.com/page", "Bad")
+
+    async def always_fails(_url):
+        raise RuntimeError("simulated extractor bug")
+
+    with _patch_llm(
+        tool_call_message=_tool_call_message("capital of france"),
+        final_message=_final_message("I could not retrieve any sources."),
+    ):
+        with (
+            patch(
+                "app.domain.research.service.search_web",
+                new=AsyncMock(return_value=[bad_source]),
+            ),
+            patch(
+                "app.domain.research.service.extract_page_text",
+                new=AsyncMock(side_effect=always_fails),
+            ),
+            patch(
+                "app.domain.research.service.embed_texts",
+                new=AsyncMock(),
+            ),
+            patch(
+                "app.domain.research.service.embed_text",
+                new=AsyncMock(),
+            ),
+        ):
+            answer = await ask_research_question(question)
+
+    # No sources survived, so Answer.sources must be empty even though
+    # the model was called.
+    assert answer.answer_text == "I could not retrieve any sources."
+    assert answer.sources == []
+
+
+async def test_ask_final_answer_sources_match_prompt_citation_order(question):
+    # The prompt template numbers sources [1], [2], ... and instructs the
+    # model to cite them inline. Today, Answer.sources is populated from
+    # the ranked top_k (in cosine-similarity order), and the prompt is
+    # built from that same list, so the numbering in the prompt and the
+    # order of Answer.sources must agree. This test pins that contract:
+    # if a future refactor decouples "what the model sees" from "what
+    # gets returned", citations like "[2]" in the answer would silently
+    # point at the wrong source.
+    source_a = _source("https://a.example.com/page", "Source A")
+    source_b = _source("https://b.example.com/page", "Source B")
+
+    # Force source_a's text to embed to a vector with higher similarity
+    # than source_b's, so source_a is the [1] in the prompt.
+    extract_by_url = {
+        str(source_a.url): "Paris is the capital of France.",
+        str(source_b.url): "Berlin is the capital of Germany.",
+    }
+
+    with _patch_llm(
+        tool_call_message=_tool_call_message("capital of france"),
+        final_message=_final_message("Paris [1]."),
+    ):
+        with (
+            patch(
+                "app.domain.research.service.search_web",
+                new=AsyncMock(return_value=[source_a, source_b]),
+            ),
+            patch(
+                "app.domain.research.service.extract_page_text",
+                new=AsyncMock(side_effect=lambda url: extract_by_url[url]),
+            ),
+            patch(
+                "app.domain.research.service.embed_texts",
+                # source_a → [1,0,0], source_b → [0,1,0]; query → [1,0,0].
+                new=AsyncMock(return_value=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+            ),
+            patch(
+                "app.domain.research.service.embed_text",
+                new=AsyncMock(return_value=[1.0, 0.0, 0.0]),
+            ),
+        ):
+            answer = await ask_research_question(question)
+
+    # The highest-similarity chunk is source_a, so it must be sources[0]
+    # and correspond to "[1]" in the prompt.
+    assert len(answer.sources) == 2
+    assert str(answer.sources[0].url) == str(source_a.url)
+    assert str(answer.sources[1].url) == str(source_b.url)
+    # The model cited "[1]" and source_a is at index 0.
+    assert "Paris [1]." in answer.answer_text
+
+
+async def test_ask_full_happy_path_sources_align_end_to_end(question):
+    # End-to-end cross-layer integration test: every boundary is mocked
+    # at its public surface (search_web, extract_page_text, embed_texts,
+    # embed_text, get_completion_with_tools), and the assertion checks
+    # that the chunk text the user sees as "the answer's sources"
+    # actually matches the chunk text the model saw in the prompt.
+    # This is the test most likely to catch a "prompt/sources drift"
+    # bug introduced by a future refactor.
+    source = _source("https://example.com/article", "Example")
+
+    with _patch_llm(
+        tool_call_message=_tool_call_message("the example query"),
+        final_message=_final_message("Based on the source, X is true [1]."),
+    ):
+        with (
+            patch(
+                "app.domain.research.service.search_web",
+                new=AsyncMock(return_value=[source]),
+            ),
+            patch(
+                "app.domain.research.service.extract_page_text",
+                new=AsyncMock(return_value="The article body. " * 50),
+            ),
+            patch(
+                "app.domain.research.service.embed_texts",
+                new=AsyncMock(return_value=[[1.0, 0.0]]),
+            ),
+            patch(
+                "app.domain.research.service.embed_text",
+                new=AsyncMock(return_value=[1.0, 0.0]),
+            ),
+        ):
+            answer = await ask_research_question(question)
+
+    assert answer.answer_text == "Based on the source, X is true [1]."
+    assert len(answer.sources) == 1
+    assert str(answer.sources[0].url) == str(source.url)
+    assert answer.sources[0].title == "Example"
+    # relevance_score must survive the round-trip from the vector store.
+    assert answer.sources[0].relevance_score is not None
+    assert answer.sources[0].relevance_score > 0

@@ -10,26 +10,11 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from app.infrastructure.embeddings import client
 from app.infrastructure.embeddings.client import (
     EmbeddingModelUnavailableError,
     embed_text,
     embed_texts,
 )
-
-pytestmark = pytest.mark.asyncio
-
-
-@pytest.fixture(autouse=True)
-def _reset_module_state():
-    # _model and the cache are process-lifetime globals; reset them around
-    # every test so tests don't leak state into each other (e.g. one test
-    # "loading" a fake model that a later test would otherwise reuse).
-    client._model = None
-    client._embedding_cache.clear()
-    yield
-    client._model = None
-    client._embedding_cache.clear()
 
 
 def _fake_model(vector_for=lambda text: [float(len(text)), 0.0, 0.0]) -> MagicMock:
@@ -161,3 +146,58 @@ async def test_embed_texts_retries_after_a_failed_load():
 
     assert embeddings == [[5.0, 0.0, 0.0]]
     assert call_count == 2
+
+
+async def test_embed_texts_wraps_encode_failure_as_domain_exception():
+    # The SentenceTransformer constructor can succeed but a later
+    # .encode() call can still raise (OOM, dimension mismatch on a
+    # poisoned cache, a corrupted weight file). That raw exception must
+    # be wrapped in EmbeddingModelUnavailableError so the service layer's
+    # catch is uniform with load failures, otherwise it would leak as an
+    # unhandled exception.
+    failing_model = MagicMock()
+    failing_model.encode.side_effect = RuntimeError("encode blew up")
+
+    with patch(
+        "app.infrastructure.embeddings.client.SentenceTransformer",
+        return_value=failing_model,
+    ):
+        with pytest.raises(EmbeddingModelUnavailableError, match="failed while generating"):
+            await embed_texts(["hello"])
+
+
+async def test_embed_texts_chains_original_encode_exception_as_cause():
+    # Same exception-chaining invariant as test_embed_texts_chains_original_
+    # exception_as_cause, but for the encode path: when a model.encode
+    # call raises, the wrapper preserves __cause__ so the underlying
+    # exception is recoverable from logs / Sentry.
+    original_error = RuntimeError("encode blew up")
+    failing_model = MagicMock()
+    failing_model.encode.side_effect = original_error
+
+    with patch(
+        "app.infrastructure.embeddings.client.SentenceTransformer",
+        return_value=failing_model,
+    ):
+        with pytest.raises(EmbeddingModelUnavailableError) as exc_info:
+            await embed_texts(["hello"])
+
+    assert exc_info.value.__cause__ is original_error
+
+
+async def test_embed_text_does_not_call_model_for_already_cached_text():
+    # Cache-hit short-circuit: the second call for the same text must
+    # NOT reach the model. This pins the contract that the TTL cache is
+    # actually consulted before any encode work is scheduled.
+    fake_model = _fake_model()
+
+    with patch(
+        "app.infrastructure.embeddings.client.SentenceTransformer",
+        return_value=fake_model,
+    ):
+        first = await embed_text("repeat me")
+        fake_model.encode.reset_mock()
+        second = await embed_text("repeat me")
+
+    assert first == second
+    fake_model.encode.assert_not_called()

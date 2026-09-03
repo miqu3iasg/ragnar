@@ -60,6 +60,36 @@ def test_specific_handlers_return_expected_status_and_detail(exc, expected_statu
     assert response.json() == {"detail": str(exc)}
 
 
+def test_llm_rate_limit_handler_forwards_retry_after_header():
+    # When the underlying exception carries a provider-suggested wait
+    # time, the 429 response must surface it as a Retry-After HTTP
+    # header so the caller can pace their own retries. Without this,
+    # the provider's hint was thrown away at the boundary.
+    exc = LLMRateLimitError("Provider rate limit exceeded.", retry_after=12.5)
+
+    client = _make_client(exc)
+
+    response = client.get("/boom")
+
+    assert response.status_code == 429
+    assert response.headers.get("Retry-After") == "12"
+
+
+def test_llm_rate_limit_handler_omits_retry_after_when_not_provided():
+    # If the exception doesn't carry a wait time, no header is set.
+    # Asserting absence (rather than None/empty) is the contract — a
+    # spurious Retry-After would mislead callers into backing off
+    # unnecessarily.
+    exc = LLMRateLimitError("Provider rate limit exceeded.")
+
+    client = _make_client(exc)
+
+    response = client.get("/boom")
+
+    assert response.status_code == 429
+    assert "Retry-After" not in response.headers
+
+
 def test_research_error_fallback_handles_unregistered_subclass():
     # Simulates exactly what ResearchError's own docstring warns about: a
     # future subclass gets added to exceptions.py but nobody registers a

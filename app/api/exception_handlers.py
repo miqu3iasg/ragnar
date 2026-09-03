@@ -78,9 +78,18 @@ async def llm_rate_limit_handler(
 
     logger.warning(f"Returning 429 to client after LLM rate limit: {exc}")
 
+    headers = {}
+    # Forward the provider's suggested wait time so the caller can pace
+    # their retries on their side. Only set when the exception actually
+    # carries one — we never invent a value here.
+    # Ref: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Retry-After
+    if exc.retry_after is not None:
+        headers["Retry-After"] = str(int(exc.retry_after))
+
     return JSONResponse(
         status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         content={"detail": str(exc)},
+        headers=headers,
     )
 
 

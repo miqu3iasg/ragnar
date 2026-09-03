@@ -7,6 +7,17 @@ build/
 dist/
 *.class
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+
 # Environment and secrets
 .env
 .env.local
@@ -18,4 +29,4 @@ Thumbs.db
 .vscode/
 
 # Logs
-*.log   
+*.log

@@ -94,6 +94,28 @@ def test_ask_question_missing_question_text_returns_422(client):
     assert response.status_code == 422
 
 
+def test_ask_question_question_text_exceeding_max_length_returns_422(client):
+    # Defense-in-depth: the max_length on Question.question_text (set in
+    # app/domain/research/question.py) rejects overlong payloads at the
+    # Pydantic layer, before any LLM or retrieval work happens. A request
+    # at exactly max_length is accepted; one over it is rejected.
+    overlong = "a" * 4001
+
+    response = client.post("/ask", json={"question_text": overlong})
+
+    assert response.status_code == 422
+
+
+def test_ask_question_empty_string_question_text_returns_422(client):
+    # An empty string fails Question's min_length=1 validator before
+    # reaching the service layer's whitespace-stripping empty-question
+    # check. Both paths reject, but the Pydantic layer rejects earlier
+    # and with a more specific error class.
+    response = client.post("/ask", json={"question_text": ""})
+
+    assert response.status_code == 422
+
+
 def test_ask_question_unexpected_exception_is_not_swallowed(
     client, question_payload, monkeypatch
 ):
@@ -109,3 +131,46 @@ def test_ask_question_unexpected_exception_is_not_swallowed(
 
     with pytest.raises(RuntimeError):
         client.post("/ask", json=question_payload)
+
+
+def test_ask_question_response_shape_matches_documented_schema(
+    client, question_payload, monkeypatch
+):
+    # Pin the documented response contract by deriving the expected
+    # fields from the live OpenAPI schema (app.openapi()). Without this
+    # guard, a refactor that renames Answer.answer_text would silently
+    # break every consumer that keys off the field name — and no other
+    # test in this file would notice.
+    fake_answer = Answer(
+        question_id="3b925b8e-2e42-4a5d-bcfe-a5194dac0109",
+        answer_text="An answer.",
+        sources=[],
+    )
+    monkeypatch.setattr(
+        research_route,
+        "ask_research_question",
+        AsyncMock(return_value=fake_answer),
+    )
+
+    response = client.post("/ask", json=question_payload)
+
+    assert response.status_code == 200
+
+    # Derive the schema from the app, not from Answer.model_json_schema()
+    # directly: the route declares response_model=Answer, so the contract
+    # is whatever FastAPI advertises for /ask's 200 response. The
+    # response is referenced via $ref under components/schemas, so
+    # resolve that ref before reading properties.
+    schema = app.openapi()
+    response_ref = schema["paths"]["/ask"]["post"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["$ref"]
+    schema_name = response_ref.rsplit("/", 1)[-1]
+    response_schema = schema["components"]["schemas"][schema_name]
+    expected_top_level_fields = set(response_schema["properties"].keys())
+
+    body = response.json()
+    assert set(body.keys()) == expected_top_level_fields
+    # Spot-check the two fields consumers actually depend on.
+    assert "answer_text" in body
+    assert "sources" in body
