@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -13,6 +14,7 @@ from app.domain.research.exceptions import (
 )
 from app.domain.research.question import Question
 from app.domain.research.service import ask_research_question
+from app.infrastructure.llm.tools import AVAILABLE_TOOLS
 
 # Ref: https://pytest-asyncio.readthedocs.io/en/stable/reference/markers/index.html
 # This marks every test in the module as asyncio so we don't have to decorate each async test function one by one.
@@ -53,6 +55,15 @@ def _make_status_error(status_code: int) -> APIStatusError:
     return APIStatusError("provider error", response=response, body={})
 
 
+def _make_message(content=None, tool_calls=None) -> SimpleNamespace:
+    # Ref: https://platform.openai.com/docs/api-reference/chat/object
+    # get_completion_with_tools returns the raw assistant message object (not a plain
+    # string), so callers can branch on message.content vs message.tool_calls. A
+    # SimpleNamespace is enough here since service.py only ever reads these two
+    # attributes off the object in the no-tool-call path these tests cover.
+    return SimpleNamespace(content=content, tool_calls=tool_calls)
+
+
 @pytest.fixture
 def question() -> Question:
     # Ref: https://docs.pydantic.dev/latest/concepts/fields/#default-values
@@ -66,12 +77,23 @@ def _patch_get_completion(**kwargs) -> patch:
     # - https://docs.python.org/3/library/unittest.mock.html#where-to-patch
     # - https://docs.python.org/3/library/unittest.mock.html#unittest.mock.AsyncMock
     #
-    # We patch get_completion where service.py imported it instead of where it's defined in
-    # infrastructure/llm/client.py, because patching the definition site would leave service.py's
-    # own reference untouched and the real function would still run.
+    # We patch get_completion_with_tools where service.py imported it instead of where
+    # it's defined in infrastructure/llm/client.py, because patching the definition site
+    # would leave service.py's own reference untouched and the real function would still
+    # run.
     #
-    # AsyncMock is needed here instead of a plain MagicMock because service.py awaits this call.
-    return patch("app.domain.research.service.get_completion", new=AsyncMock(**kwargs))
+    # AsyncMock is needed here instead of a plain MagicMock because service.py awaits this
+    # call. A bare `return_value=<str>` is a convenience for callers of this helper: it gets
+    # wrapped into a fake message object here, since the real function returns a message
+    # object (with .content/.tool_calls), not a plain string. side_effect (used for the
+    # error-translation tests) is passed through unchanged, since those are exceptions, not
+    # successful responses.
+    if "return_value" in kwargs:
+        kwargs["return_value"] = _make_message(content=kwargs["return_value"])
+    return patch(
+        "app.domain.research.service.get_completion_with_tools",
+        new=AsyncMock(**kwargs),
+    )
 
 
 @pytest.mark.parametrize(
@@ -112,7 +134,12 @@ async def test_ask_sends_stripped_question_text_to_llm(question):
         await ask_research_question(question)
 
     # Ref: https://docs.python.org/3/library/unittest.mock.html#unittest.mock.AsyncMock.assert_awaited_once_with
-    mocked.assert_awaited_once_with("what is the capital of france?")
+    # The initial call always passes the full messages list plus AVAILABLE_TOOLS, since the
+    # model gets a chance to request a search before answering (RAG path, not exercised here).
+    mocked.assert_awaited_once_with(
+        [{"role": "user", "content": "what is the capital of france?"}],
+        tools=AVAILABLE_TOOLS,
+    )
 
 
 async def test_ask_translates_rate_limit_error(question):

@@ -1,7 +1,7 @@
 # Refs:
-#   OpenRouter API reference: https://openrouter.ai/docs/api_reference/overview
-#   OpenAI Python client (error types used below): https://github.com/openai/openai-python/
-#   OpenRouter rate limits: https://openrouter.ai/docs/api_reference/limits
+# - OpenRouter API reference: https://openrouter.ai/docs/api_reference/overview
+# - OpenAI Python client (error types used below): https://github.com/openai/openai-python/
+# - OpenRouter rate limits: https://openrouter.ai/docs/api_reference/limits
 #
 # Retry-with-backoff lives in this module because it is the network boundary
 # between our server and OpenRouter, and therefore the layer most exposed to
@@ -44,13 +44,16 @@ logger = logging.getLogger(__name__)
 # (the SDK's and Tenacity's), producing unpredictable wait times and
 # obscuring the actual retry behavior.
 client = AsyncOpenAI(
-    base_url=OPENROUTER_BASE_URL, api_key=OPENROUTER_API_KEY, max_retries=0
+    base_url=OPENROUTER_BASE_URL,
+    api_key=OPENROUTER_API_KEY,
+    max_retries=0,
 )
 
 
 def is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, (RateLimitError, APIConnectionError, APITimeoutError)):
         return True
+
     return bool(isinstance(exc, APIStatusError) and exc.status_code == 429)
 
 
@@ -94,8 +97,9 @@ def _headers_from_json_body(exc: BaseException) -> dict:
     if not isinstance(headers, dict):
         return {}
 
-    # Normalize keys to lowercase to match the convention used by actual HTTP headers.
-    return {k.lower(): v for k, v in headers.items()}
+    # Normalize keys to lowercase to match the convention used by
+    # actual HTTP headers.
+    return {key.lower(): value for key, value in headers.items()}
 
 
 def _extract_retry_after(exc: BaseException) -> float | None:
@@ -110,7 +114,10 @@ def _extract_retry_after(exc: BaseException) -> float | None:
         headers = _headers_from_json_body(exc)
     else:
         # Merge both sources, giving precedence to actual HTTP headers.
-        headers = {**_headers_from_json_body(exc), **headers}
+        headers = {
+            **_headers_from_json_body(exc),
+            **headers,
+        }
 
     if not headers:
         return None
@@ -121,7 +128,8 @@ def _extract_retry_after(exc: BaseException) -> float | None:
         try:
             return float(retry_after)
         except ValueError:
-            pass  # May be an HTTP-date string; not handled here for simplicity.
+            # May be an HTTP-date string; not handled here for simplicity.
+            pass
 
     # X-RateLimit-Reset can be an epoch timestamp in milliseconds or seconds,
     # depending on the provider. Both cases are handled below.
@@ -137,11 +145,13 @@ def _extract_retry_after(exc: BaseException) -> float | None:
             import time
 
             wait_seconds = (reset_value / 1000) - time.time()
+
         elif reset_value >= 1e9:
             # Epoch seconds.
             import time
 
             wait_seconds = reset_value - time.time()
+
         else:
             # Already expressed as a duration in seconds.
             wait_seconds = reset_value
@@ -156,11 +166,14 @@ def wait_with_retry_after(fallback_wait):
 
     def wait_func(retry_state: RetryCallState) -> float:
         exc = retry_state.outcome.exception()
+
         if exc is not None:
             retry_after = _extract_retry_after(exc)
+
             if retry_after is not None:
                 logger.warning(
-                    f"Rate limit: waiting {retry_after:.1f}s (suggested by the provider)"
+                    "Rate limit: waiting %.1fs (suggested by the provider)",
+                    retry_after,
                 )
                 return retry_after
 
@@ -169,30 +182,78 @@ def wait_with_retry_after(fallback_wait):
     return wait_func
 
 
-# Async usage ref: https://github.com/openai/openai-python#async-usage
-@retry(
+# The retry/backoff policy is applied once at the network boundary,
+# so all OpenRouter requests share the same retry behavior.
+_retry_policy = retry(
     retry=retry_if_exception(is_retryable),
-    wait=wait_with_retry_after(wait_random_exponential(multiplier=1, max=60)),
+    wait=wait_with_retry_after(
+        wait_random_exponential(
+            multiplier=1,
+            max=60,
+        )
+    ),
     stop=stop_after_attempt(6),
     before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
-async def get_completion(content: str):
-    # Response schema ref: https://developers.openai.com/api/reference/resources/chat
+
+
+@_retry_policy
+async def _create_completion(
+    messages: list[dict],
+    tools: list[dict] | None = None,
+):
+    kwargs = {}
+
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+
+    # Response schema ref:
+    # https://developers.openai.com/api/reference/resources/chat
     completion = await client.chat.completions.create(
         extra_headers={
-            "HTTP-Referer": "<YOUR_SITE_URL>",  # Optional. Site URL for rankings on openrouter.ai.
-            "X-OpenRouter-Title": "<YOUR_SITE_NAME>",  # Optional. Site title for rankings on openrouter.ai.
+            # Optional. Site URL for rankings on openrouter.ai.
+            "HTTP-Referer": "<YOUR_SITE_URL>",
+            # Optional. Site title for rankings on openrouter.ai.
+            "X-OpenRouter-Title": "<YOUR_SITE_NAME>",
         },
         model=OPENROUTER_MODEL,
-        messages=[
-            {
-                "role": "user",
-                "content": content,
-            }
-        ],
+        messages=messages,
+        **kwargs,
     )
 
-    # Only the generated text is relevant to callers; the rest of the
-    # response object is discarded here.
-    return completion.choices[0].message.content
+    return completion.choices[0].message
+
+
+async def get_completion(content: str):
+    """
+    Simple single-turn completion, no tools involved.
+
+    Kept as-is (existing tests target this function) for callers that
+    just need a plain question-in, answer-out call.
+    """
+
+    message = await _create_completion([{"role": "user", "content": content}])
+
+    return message.content
+
+
+async def get_completion_with_tools(
+    messages: list[dict],
+    tools: list[dict] | None = None,
+):
+    """
+    Multi-turn completion with optional tool definitions.
+
+    Returns the raw assistant message so the caller (domain/research/
+    service.py) can branch on whether the model answered directly
+    (message.content) or requested a tool call (message.tool_calls) —
+    unlike get_completion, this can't collapse the result to plain text,
+    since the caller needs to see the tool_calls to act on them.
+    """
+
+    return await _create_completion(
+        messages,
+        tools=tools,
+    )

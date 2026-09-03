@@ -1,6 +1,14 @@
 # Refs:
-#   - https://fastapi.tiangolo.com/tutorial/handling-errors/#install-custom-exception-handlers
-#   - https://www.starlette.io/exceptions/
+# - FastAPI, "Handling Errors" / custom exception handlers: https://fastapi.tiangolo.com/tutorial/handling-errors/#install-custom-exception-handlers
+# - Starlette, "Exceptions" (how handler resolution by MRO actually works): https://www.starlette.io/exceptions/
+# - Python logging levels (why some handlers log at .info, others at .error/.exception): https://docs.python.org/3/library/logging.html#logging-levels
+# - HTTP status codes used below, MDN reference:
+#   400 https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
+#   429 https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+#   502 https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/502
+#   503 https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503
+#   500 https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500
+#
 # Global FastAPI exception handlers.
 #
 # This module is the single translation boundary between domain exceptions
@@ -30,6 +38,7 @@ from app.domain.research.exceptions import (
     LLMResponseError,
     LLMUnavailableError,
     ResearchError,
+    RetrievalUnavailableError,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,7 +68,8 @@ async def llm_rate_limit_handler(
     Handle rate-limit failures that survived client.py's retry-with-backoff.
 
     By the time this handler runs, tenacity has already exhausted its
-    retries (see infrastructure/llm/client.py), so this is the final,
+    retries (see infrastructure/llm/client.py — ref:
+    https://tenacity.readthedocs.io/en/latest/), so this is the final,
     non-recoverable rate limit failure for this request, not the first
     attempt. Returning 429 (instead of a generic 500) lets the caller
     apply its own backoff/retry logic on their side.
@@ -110,6 +120,29 @@ async def llm_response_handler(request: Request, exc: LLMResponseError) -> JSONR
     )
 
 
+async def retrieval_unavailable_handler(
+    request: Request, exc: RetrievalUnavailableError
+) -> JSONResponse:
+    """
+    The retrieval pipeline failed outright: the search provider (Tavily)
+    was unreachable/erroring, or the local embedding model couldn't be
+    loaded or run (see RetrievalUnavailableError's docstring for the
+    exact causes it wraps).
+
+    503, same rationale as llm_unavailable_handler above: a provider this
+    request depends on is down, "try again later" is the honest signal to
+    send, as opposed to 502 (the provider answered but gave us something
+    unusable) or 500 (we don't know what happened).
+    """
+
+    logger.error(f"Returning 503 to client, retrieval pipeline unavailable: {exc}")
+
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": str(exc)},
+    )
+
+
 async def research_error_fallback_handler(
     request: Request, exc: ResearchError
 ) -> JSONResponse:
@@ -121,8 +154,9 @@ async def research_error_fallback_handler(
     This only fires for a *future* exception type we add to exceptions.py
     and forget to register a specific handler for — every subclass that
     exists today (EmptyQuestionError, LLMRateLimitError,
-    LLMUnavailableError, LLMResponseError) has its own handler above,
-    which Starlette matches before falling back to this one.
+    LLMUnavailableError, LLMResponseError, RetrievalUnavailableError) has
+    its own handler above, which Starlette matches before falling back to
+    this one.
 
     500 here, since we don't know the specific failure mode, unlike the
     handlers above, this isn't a status code we can justify semantically.
@@ -142,15 +176,18 @@ def register_exception_handlers(app: FastAPI) -> None:
     """
     Register all domain-exception -> HTTP response mappings.
 
+    Ref: https://fastapi.tiangolo.com/tutorial/handling-errors/#install-custom-exception-handlers
     Call once from main.py, right after creating the FastAPI app instance.
     Registration order doesn't affect matching (Starlette resolves by
-    walking the raised exception's MRO, not by insertion order), but
-    specific-to-general reads better for anyone skimming this function.
+    walking the raised exception's MRO, not by insertion order — ref:
+    https://www.starlette.io/exceptions/), but specific-to-general reads
+    better for anyone skimming this function.
     """
 
     app.add_exception_handler(EmptyQuestionError, empty_question_handler)
     app.add_exception_handler(LLMRateLimitError, llm_rate_limit_handler)
     app.add_exception_handler(LLMUnavailableError, llm_unavailable_handler)
     app.add_exception_handler(LLMResponseError, llm_response_handler)
+    app.add_exception_handler(RetrievalUnavailableError, retrieval_unavailable_handler)
     # Fallback last, both for readability and because it's the least specific.
     app.add_exception_handler(ResearchError, research_error_fallback_handler)
