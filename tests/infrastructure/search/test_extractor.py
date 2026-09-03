@@ -7,17 +7,13 @@
 import hashlib
 
 import httpx
-import pytest
 import respx
 
-from app.infrastructure.search import extractor
 from app.infrastructure.search.extractor import (
     FETCH_TIMEOUT_SECONDS,
     _cache_key,
     extract_page_text,
 )
-
-pytestmark = pytest.mark.asyncio
 
 _URL = "https://example.com/article"
 
@@ -27,17 +23,7 @@ content, long enough for trafilatura to treat it as the main content
 block rather than boilerplate.</p></article></body></html>
 """
 
-_EMPTY_HTML = "<html><body><nav>Menu</nav><footer>Copyright</footer></body></html>"
-
-
-@pytest.fixture(autouse=True)
-def _clear_cache():
-    # Ref: pytest fixture teardown (code after `yield`) — https://docs.pytest.org/en/stable/how-to/fixtures.html#teardown-cleanup-aka-fixture-finalization
-    # The module-level cache persists across tests otherwise, since it's
-    # process-lifetime state, not something pytest resets automatically.
-    extractor._extraction_cache.clear()
-    yield
-    extractor._extraction_cache.clear()
+_EMPTY_HTML = "<html><body></body></html>"
 
 
 @respx.mock
