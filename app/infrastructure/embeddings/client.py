@@ -101,7 +101,24 @@ def _embed_sync(texts: list[str]) -> list[list[float]]:
     # Ref: SentenceTransformer.encode() parameters (convert_to_numpy,
     # normalize_embeddings): https://www.sbert.net/docs/package_reference/sentence_transformer/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode
     model = _get_model()
-    embeddings = model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
+    try:
+        embeddings = model.encode(
+            texts, convert_to_numpy=True, normalize_embeddings=True
+        )
+    except Exception as exc:
+        # Anything `model.encode` raises (OOM, dimension mismatch with a
+        # cached input, a corrupted weight file the constructor accepted
+        # but encode choked on) lands here. Wrapping it in the same
+        # domain exception as a load failure lets the service layer
+        # translate it into RetrievalUnavailableError uniformly, instead
+        # of leaking a raw sentence-transformers / NumPy exception that
+        # would surface as an unhandled 500.
+        logger.exception(
+            f"Embedding model encode failed for {len(texts)} input(s)."
+        )
+        raise EmbeddingModelUnavailableError(
+            "Embedding model failed while generating embeddings."
+        ) from exc
     return embeddings.tolist()
 
 
