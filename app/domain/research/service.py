@@ -38,6 +38,7 @@ from app.infrastructure.embeddings.client import (
     embed_text,
     embed_texts,
 )
+from app.infrastructure.llm.client import extract_retry_after as _extract_retry_after_from_sdk_exception
 from app.infrastructure.llm.client import get_completion_with_tools
 from app.infrastructure.llm.tools import AVAILABLE_TOOLS
 from app.infrastructure.rag.chunking import chunk_text
@@ -77,7 +78,14 @@ async def _call_llm_with_tools(messages: list[dict], tools: list[dict] | None):
         # already exhausted and reraised the original exception, so this
         # is the final rate limit failure, not the first one.
         logger.warning(f"Rate limit persisted after retries exhausted: {exc}")
-        raise LLMRateLimitError("Provider rate limit exceeded.") from exc
+        # Try to forward the provider's suggested wait time. The helper
+        # below is the same one tenacity uses internally to pick its
+        # backoff, so we get the same value here that we honored across
+        # retries — and the 429 response carries it back to the caller.
+        retry_after = _extract_retry_after_from_sdk_exception(exc)
+        raise LLMRateLimitError(
+            "Provider rate limit exceeded.", retry_after=retry_after
+        ) from exc
     except (APIConnectionError, APITimeoutError) as exc:
         logger.error(f"Connection to LLM provider failed: {exc}")
         raise LLMUnavailableError("Could not reach the LLM provider.") from exc
@@ -105,14 +113,26 @@ async def _process_source(result: SearchResult) -> list[tuple[str, SearchResult]
     Returns an empty list if the page couldn't be fetched, had no
     extractable content, or produced no chunks — callers treat all three
     the same way: skip this source.
-    """
-    page_text = await extract_page_text(str(result.url))
-    if page_text is None:
-        return []
 
-    # Ref: chunking strategy background — https://www.pinecone.io/learn/chunking-strategies/
-    chunks = chunk_text(page_text)
-    return [(chunk, result) for chunk in chunks]
+    Any unexpected exception (a bug in the extractor, a malformed URL,
+    etc.) is also swallowed to an empty list rather than letting it cancel
+    the gather over the rest of the sources: the design intent is that a
+    single bad page must never abort the whole request. The exception is
+    logged so the bug isn't invisible — see _run_search_tool for the
+    gather wiring that relies on this.
+    """
+    try:
+        page_text = await extract_page_text(str(result.url))
+        if page_text is None:
+            return []
+        # Ref: chunking strategy background — https://www.pinecone.io/learn/chunking-strategies/
+        chunks = chunk_text(page_text)
+        return [(chunk, result) for chunk in chunks]
+    except Exception:
+        logger.exception(
+            f"Unexpected error while processing search result: {result.url}"
+        )
+        return []
 
 
 def _deduplicate(
@@ -241,11 +261,29 @@ async def ask_research_question(question: Question) -> Answer:
             raise LLMResponseError("The model did not return a usable response.")
         return Answer(question_id=question.id, answer_text=answer_text, sources=[])
 
-    # The model asked to search. Only the first tool call is executed,
-    # AVAILABLE_TOOLS currently exposes a single tool (search_web), so a
-    # well-behaved model shouldn't request more than one per turn.
+    # The model asked to search. AVAILABLE_TOOLS currently exposes a
+    # single tool (search_web), so a well-behaved model should request at
+    # most one per turn. If the model returns multiple, log and use only
+    # the first — silently dropping extras would mask a model-quality
+    # issue. If the first tool name isn't search_web, treat it as a
+    # model-side bug rather than crashing on a missing argument: a
+    # hallucinated function name shouldn't reach the user as a 500.
     # Ref: https://platform.openai.com/docs/guides/function-calling
+    if len(message.tool_calls) > 1:
+        logger.warning(
+            f"Model returned {len(message.tool_calls)} tool calls; "
+            f"only the first will be executed."
+        )
+
     tool_call = message.tool_calls[0]
+    if tool_call.function.name != "search_web":
+        logger.error(
+            f"Model requested unexpected tool: {tool_call.function.name!r}"
+        )
+        raise LLMResponseError(
+            f"The model requested an unexpected tool: {tool_call.function.name!r}"
+        )
+
     try:
         # Ref: json.loads / JSONDecodeError — https://docs.python.org/3/library/json.html
         arguments = json.loads(tool_call.function.arguments)
