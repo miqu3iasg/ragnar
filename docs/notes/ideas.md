@@ -1,5 +1,19 @@
 Lista única, em ordem. Cada item pressupõe o anterior concluído.
 
+> **Status pós-branch `chore/harden-existing-features-and-add-tests`** —
+> essa branch não moveu nenhum item da lista abaixo de `[ ]` para `[x]`.
+> O trabalho foi exclusivamente de *hardening* do que já estava
+> implementado: validação de input, defesa contra erros do modelo,
+> propagação de `Retry-After`, testes extras, infraestrutura de teste
+> (`pytest-cov`, `asyncio_mode=auto`, fixtures compartilhadas).
+>
+> Cobertura subiu de cobertura implícita sem número para **95% de linhas
+> e branches** sobre `app/`, com **121 testes** (eram 93). Mas nenhum
+> item de roadmap foi *concluído* — em particular, persistência,
+> NLI/contradição, classificador de credibilidade, fila assíncrona,
+> autenticação, rate limiting, métricas, Docker e o classificador de
+> RAGAS continuam pendentes e precisam de branches próprias.
+
 ## O que é RAG e onde ele entra neste projeto
 
 **RAG (Retrieval-Augmented Generation)** é a técnica de, antes de pedir pro LLM
